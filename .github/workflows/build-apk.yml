@@ -12,6 +12,9 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: read
+
 env:
   DS_FREE_API_REPO: "NIyueeE/ds-free-api"
   DS_BINARY_ASSET_PATH: "app/src/main/assets/ds-free-api"
@@ -39,43 +42,59 @@ jobs:
 
       - name: Download ds-free-api binary
         run: |
+          set -e
           mkdir -p app/src/main/assets
 
           # 获取最新 Release 信息
           if [ -n "${{ github.event.inputs.ds_version }}" ]; then
             TAG="v${{ github.event.inputs.ds_version }}"
           else
-            TAG=$(curl -s "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/latest" | jq -r '.tag_name')
+            RELEASE_JSON=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/latest")
+            echo "Release API 响应: $(echo "$RELEASE_JSON" | head -c 200)"
+            TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+          fi
+
+          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+            echo "错误: 无法获取最新 Release 标签"
+            echo "尝试直接使用已知版本 v0.2.6"
+            TAG="v0.2.6"
           fi
 
           echo "使用 ds-free-api 版本: ${TAG}"
 
+          # 获取 Release 的 asset 列表
+          RELEASE_DATA=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/tags/${TAG}")
+
           # 获取 Android ARM64 (aarch64-linux-gnu) 的下载 URL
-          ASSET_URL=$(curl -s "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/tags/${TAG}" | \
-            jq -r '.assets[] | select(.name | test("aarch64-linux-gnu")) | .browser_download_url' | head -1)
+          ASSET_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("aarch64-linux-gnu")) | .browser_download_url' | head -1)
 
           if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
-            echo "错误: 未找到 aarch64-linux-gnu 二进制文件"
-            echo "尝试 musl 版本..."
-            ASSET_URL=$(curl -s "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/tags/${TAG}" | \
-              jq -r '.assets[] | select(.name | test("aarch64-linux-musl")) | .browser_download_url' | head -1)
+            echo "未找到 aarch64-linux-gnu 二进制文件，尝试 musl 版本..."
+            ASSET_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("aarch64-linux-musl")) | .browser_download_url' | head -1)
           fi
 
           if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
             echo "错误: 未找到任何 Android ARM64 二进制文件"
+            echo "可用的 assets:"
+            echo "$RELEASE_DATA" | jq -r '.assets[].name'
             exit 1
           fi
 
           echo "下载: ${ASSET_URL}"
-          curl -L -o ds-free-api.tar.gz "${ASSET_URL}"
+          curl -sS -L -o ds-free-api.tar.gz "${ASSET_URL}"
 
           # 解压并提取二进制
           tar -xzf ds-free-api.tar.gz
+          echo "解压后的文件:"
+          ls -la
+
           # 查找解压后的二进制文件
-          BINARY=$(find . -maxdepth 2 -name "ds-free-api" -type f | head -1)
+          BINARY=$(find . -maxdepth 3 -name "ds-free-api" -type f | head -1)
           if [ -z "${BINARY}" ]; then
             echo "错误: 解压后未找到 ds-free-api 二进制文件"
-            ls -la
+            find . -type f | head -20
             exit 1
           fi
           echo "找到二进制: ${BINARY}"
@@ -105,7 +124,6 @@ jobs:
       - name: Sign Release APK (debug key)
         if: success()
         run: |
-          # 使用 debug keystore 签名 release APK（方便测试）
           if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
             $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
               --ks $HOME/.android/debug.keystore \
