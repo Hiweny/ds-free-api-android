@@ -1,0 +1,165 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ds_version:
+        description: 'ds-free-api 版本号 (留空使用最新 Release)'
+        required: false
+        default: ''
+
+env:
+  DS_FREE_API_REPO: "NIyueeE/ds-free-api"
+  DS_BINARY_ASSET_PATH: "app/src/main/assets/ds-free-api"
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 cmdline-tools;latest'
+
+      - name: Download ds-free-api binary
+        run: |
+          mkdir -p app/src/main/assets
+
+          # 获取最新 Release 信息
+          if [ -n "${{ github.event.inputs.ds_version }}" ]; then
+            TAG="v${{ github.event.inputs.ds_version }}"
+          else
+            TAG=$(curl -s "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/latest" | jq -r '.tag_name')
+          fi
+
+          echo "使用 ds-free-api 版本: ${TAG}"
+
+          # 获取 Android ARM64 (aarch64-linux-gnu) 的下载 URL
+          ASSET_URL=$(curl -s "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/tags/${TAG}" | \
+            jq -r '.assets[] | select(.name | test("aarch64-linux-gnu")) | .browser_download_url' | head -1)
+
+          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
+            echo "错误: 未找到 aarch64-linux-gnu 二进制文件"
+            echo "尝试 musl 版本..."
+            ASSET_URL=$(curl -s "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/tags/${TAG}" | \
+              jq -r '.assets[] | select(.name | test("aarch64-linux-musl")) | .browser_download_url' | head -1)
+          fi
+
+          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
+            echo "错误: 未找到任何 Android ARM64 二进制文件"
+            exit 1
+          fi
+
+          echo "下载: ${ASSET_URL}"
+          curl -L -o ds-free-api.tar.gz "${ASSET_URL}"
+
+          # 解压并提取二进制
+          tar -xzf ds-free-api.tar.gz
+          # 查找解压后的二进制文件
+          BINARY=$(find . -maxdepth 2 -name "ds-free-api" -type f | head -1)
+          if [ -z "${BINARY}" ]; then
+            echo "错误: 解压后未找到 ds-free-api 二进制文件"
+            ls -la
+            exit 1
+          fi
+          echo "找到二进制: ${BINARY}"
+          cp "${BINARY}" "${{ env.DS_BINARY_ASSET_PATH }}"
+          chmod +x "${{ env.DS_BINARY_ASSET_PATH }}"
+          ls -la "${{ env.DS_BINARY_ASSET_PATH }}"
+          file "${{ env.DS_BINARY_ASSET_PATH }}"
+
+      - name: Verify assets
+        run: |
+          echo "=== Assets 目录内容 ==="
+          ls -la app/src/main/assets/
+          echo "=== 二进制文件类型 ==="
+          file app/src/main/assets/ds-free-api || true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Build Release APK
+        run: gradle assembleRelease --stacktrace
+
+      - name: Sign Release APK (debug key)
+        if: success()
+        run: |
+          # 使用 debug keystore 签名 release APK（方便测试）
+          if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
+              --ks $HOME/.android/debug.keystore \
+              --ks-pass pass:android \
+              --ks-key-alias androiddebugkey \
+              --key-pass pass:android \
+              --out app/build/outputs/apk/release/app-release.apk \
+              app/build/outputs/apk/release/app-release-unsigned.apk
+            echo "Release APK 已签名"
+          else
+            echo "未找到 release APK，跳过签名"
+          fi
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ds-free-api-android-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ds-free-api-android-release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 30
+
+      - name: Upload mapping files
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ds-free-api-android-mappings
+          path: app/build/outputs/mapping/
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ds-free-api-android-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app-release.apk
+          draft: false
+          prerelease: false
+          generate_release_notes: true

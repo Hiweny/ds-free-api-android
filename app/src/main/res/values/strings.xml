@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DS Free API</string>
+    <string name="service_running">DeepSeek API 代理已运行 · 端口 22217</string>
+    <string name="service_paused">DeepSeek API 代理已暂停 · 端口 22217</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_resume">恢复</string>
+    <string name="action_stop">停止</string>
+    <string name="action_open">打开管理面板</string>
+</resources>
