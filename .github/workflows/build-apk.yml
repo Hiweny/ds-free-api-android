@@ -134,7 +134,7 @@ jobs:
         run: |
           cd ds-free-api-src
           echo "开始交叉编译 (可能需要 20-40 分钟)..."
-          cargo ndk -t ${{ env.ABI }} -p ${{ env.API_LEVEL }} build --release
+          cargo ndk -t ${{ env.ABI }} --platform ${{ env.API_LEVEL }} build --release
           echo "编译完成！"
           BINARY_PATH="target/aarch64-linux-android/release/${{ env.BINARY_NAME }}"
           ls -la "$BINARY_PATH"
