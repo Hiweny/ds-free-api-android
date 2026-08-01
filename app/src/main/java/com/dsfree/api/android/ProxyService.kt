@@ -180,7 +180,7 @@ class ProxyService : Service() {
 
         try {
             proxyProcess = processBuilder.start()
-            Log.i(TAG, "已启动进程: PID=${proxyProcess?.pid()}, binary=${binaryFile.name}")
+            Log.i(TAG, "已启动进程: binary=${binaryFile.name}")
 
             // 读取进程输出用于日志
             serviceScope.launch {

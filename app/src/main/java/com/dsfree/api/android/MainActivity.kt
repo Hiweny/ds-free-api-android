@@ -172,11 +172,11 @@ class MainActivity : AppCompatActivity() {
 
                     if (responseCode == 200) {
                         Log.i(TAG, "健康检查通过 (${retryCount + 1}次尝试)")
+                        isHealthChecking = false
                         handler.post {
-                            isHealthChecking = false
                             loadAdminPanel()
                         }
-                        return
+                        break
                     }
                 } catch (e: Exception) {
                     Log.d(TAG, "健康检查 (${retryCount + 1}/$MAX_RETRIES): ${e.message}")
@@ -194,7 +194,8 @@ class MainActivity : AppCompatActivity() {
                 try {
                     Thread.sleep(POLL_INTERVAL_MS)
                 } catch (e: InterruptedException) {
-                    return
+                    isHealthChecking = false
+                    break
                 }
             }
 
