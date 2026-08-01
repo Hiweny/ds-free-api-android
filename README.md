@@ -8,11 +8,14 @@
 
 ## 功能特性
 
+- **从源码交叉编译**：CI 自动从 ds-free-api 源码交叉编译 aarch64-linux-android 二进制，无需手动下载
 - **安装即用**：APK 安装后打开 App，自动在后台启动 DeepSeek API 代理
 - **内置 Web 管理面板**：账号管理、API Key 创建、模型配置、日志查看，全部在 App 内完成
+- **健康检查机制**：App 启动后轮询健康接口，服务就绪后自动加载管理面板，支持超时重试
+- **深色模式**：跟随系统深色模式，WebView 自适应暗色主题
 - **前台通知驻留**：持久通知栏，随时暂停/恢复/停止服务
 - **开机自启**：手机重启后自动拉起代理服务
-- **零成本**：使用 DeepSeek 网页版免费账号，无需官方 API Key
+- **崩溃自动重启**：二进制异常退出后自动重启，最多重试 5 次
 - **安全隔离**：所有流量仅限本地回环（127.0.0.1），不暴露到公网
 
 ## 快速开始
@@ -21,9 +24,8 @@
 
 1. 从 [Releases](https://github.com/Hiweny/ds-free-api-android/releases) 下载最新 APK
 2. 安装后打开「DS Free API」应用
-3. 等待服务启动（通知栏显示「DeepSeek API 代理已运行」）
-4. App 自动加载管理面板，设置管理员密码
-5. 在管理面板中添加 DeepSeek 账号、创建 API Key
+3. 等待服务启动（加载页显示进度，就绪后自动进入管理面板）
+4. 设置管理员密码，在管理面板中添加 DeepSeek 账号、创建 API Key
 
 ### 使用
 
@@ -47,11 +49,13 @@
 │  ┌───────────────────────────┐  │
 │  │     MainActivity          │  │
 │  │  (WebView 加载管理面板)    │  │
+│  │  + 健康检查 + 深色模式     │  │
 │  └───────────┬───────────────┘  │
 │              │                   │
 │  ┌───────────▼───────────────┐  │
 │  │     ProxyService          │  │
 │  │  (Foreground Service)     │  │
+│  │  + 自动重启 + 进程监控     │  │
 │  │                           │  │
 │  │  ┌─────────────────────┐  │  │
 │  │  │  ds-free-api 二进制  │  │  │
@@ -74,36 +78,50 @@
 ### 前置要求
 
 - JDK 17
-- Android SDK (API 35)
+- Android SDK (API 35) + NDK
+- Rust stable + cargo-ndk
+- Bun (用于构建前端)
 
 ### 构建步骤
 
 ```bash
-# 1. 下载 ds-free-api 二进制
-curl -L "https://github.com/NIyueeE/ds-free-api/releases/latest/download/ds-free-api-*-aarch64-linux-gnu.tar.gz" -o ds.tar.gz
-tar -xzf ds.tar.gz
-cp ds-free-api app/src/main/assets/
+# 1. 克隆 ds-free-api 源码
+git clone https://github.com/NIyueeE/ds-free-api.git ds-free-api-src
 
-# 2. 构建 APK
+# 2. 构建前端
+cd ds-free-api-src/web
+bun install && bun run build
+cd ../..
+
+# 3. 交叉编译二进制 (需要 Android NDK)
+cd ds-free-api-src
+cargo ndk -t arm64-v8a -p 24 build --release
+cd ..
+
+# 4. 复制二进制到 assets
+cp ds-free-api-src/target/aarch64-linux-android/release/ds-free-api app/src/main/assets/
+
+# 5. 构建 APK
 gradle assembleRelease
 
-# 3. APK 位于
+# 6. APK 位于
 # app/build/outputs/apk/release/app-release.apk
 ```
 
 ### GitHub Actions
 
-推送代码到 main 分支即自动构建，或手动触发 `workflow_dispatch`。
+推送代码到 main 分支即自动构建（从源码交叉编译 + 打包 APK），或手动触发 `workflow_dispatch`。
 
 ## 权限说明
 
 | 权限 | 用途 |
 |------|------|
+| INTERNET | WebView 访问本地管理面板 |
 | FOREGROUND_SERVICE | 持久通知栏，保持服务存活 |
+| FOREGROUND_SERVICE_DATA_SYNC | 数据同步类型前台服务 |
 | RECEIVE_BOOT_COMPLETED | 开机自启 |
+| WAKE_LOCK | 保持服务运行 |
 | REQUEST_IGNORE_BATTERY_OPTIMIZATIONS | 防止被系统杀后台 |
-
-**不需要存储权限、不需要网络权限（二进制自己管理 HTTP 本地监听）**
 
 ## 依赖项目
 

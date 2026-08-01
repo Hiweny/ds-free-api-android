@@ -10,16 +10,13 @@ import androidx.core.app.NotificationCompat
 class NotificationHelper(private val context: Context) {
 
     companion object {
-        const val CHANNEL_ID = "ds_free_api_proxy"
-        const val CHANNEL_NAME = "DeepSeek API 代理"
+        const val CHANNEL_ID = "ds_free_api_service"
+        const val CHANNEL_NAME = "代理服务"
         const val NOTIFICATION_ID = 1001
-        const val ACTION_PAUSE = "com.dsfree.api.android.ACTION_PAUSE"
-        const val ACTION_RESUME = "com.dsfree.api.android.ACTION_RESUME"
-        const val ACTION_STOP = "com.dsfree.api.android.ACTION_STOP"
-        const val ACTION_OPEN = "com.dsfree.api.android.ACTION_OPEN"
     }
 
-    private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+    private val notificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
 
     init {
         createNotificationChannel()
@@ -41,7 +38,6 @@ class NotificationHelper(private val context: Context) {
 
     fun createRunningNotification(): Notification {
         val openIntent = Intent(context, MainActivity::class.java).apply {
-            action = ACTION_OPEN
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val openPendingIntent = PendingIntent.getActivity(
@@ -50,7 +46,7 @@ class NotificationHelper(private val context: Context) {
         )
 
         val pauseIntent = Intent(context, ProxyService::class.java).apply {
-            action = ACTION_PAUSE
+            action = ProxyService.ACTION_PAUSE
         }
         val pausePendingIntent = PendingIntent.getService(
             context, 1, pauseIntent,
@@ -58,7 +54,7 @@ class NotificationHelper(private val context: Context) {
         )
 
         val stopIntent = Intent(context, ProxyService::class.java).apply {
-            action = ACTION_STOP
+            action = ProxyService.ACTION_STOP
         }
         val stopPendingIntent = PendingIntent.getService(
             context, 2, stopIntent,
@@ -66,11 +62,12 @@ class NotificationHelper(private val context: Context) {
         )
 
         return NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_manage)
-            .setContentTitle("DeepSeek API 代理已运行")
-            .setContentText("端口 22217 · 点击打开管理面板")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("DeepSeek API 代理")
+            .setContentText("代理服务运行中 · 端口 22217")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
             .setContentIntent(openPendingIntent)
             .addAction(android.R.drawable.ic_media_pause, "暂停", pausePendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", stopPendingIntent)
@@ -87,7 +84,7 @@ class NotificationHelper(private val context: Context) {
         )
 
         val resumeIntent = Intent(context, ProxyService::class.java).apply {
-            action = ACTION_RESUME
+            action = ProxyService.ACTION_RESUME
         }
         val resumePendingIntent = PendingIntent.getService(
             context, 3, resumeIntent,
@@ -95,7 +92,7 @@ class NotificationHelper(private val context: Context) {
         )
 
         val stopIntent = Intent(context, ProxyService::class.java).apply {
-            action = ACTION_STOP
+            action = ProxyService.ACTION_STOP
         }
         val stopPendingIntent = PendingIntent.getService(
             context, 2, stopIntent,
@@ -104,10 +101,11 @@ class NotificationHelper(private val context: Context) {
 
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_pause)
-            .setContentTitle("DeepSeek API 代理已暂停")
-            .setContentText("端口 22217 · 点击恢复服务")
+            .setContentTitle("DeepSeek API 代理")
+            .setContentText("代理服务已暂停")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
             .setContentIntent(openPendingIntent)
             .addAction(android.R.drawable.ic_media_play, "恢复", resumePendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", stopPendingIntent)

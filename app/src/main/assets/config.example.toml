@@ -1,25 +1,10 @@
 [server]
 host = "127.0.0.1"
 port = 22217
+cors_origins = ["http://localhost:22217", "http://127.0.0.1:22217"]
 
 [ds_core]
-# 账号池（[[ds_core.accounts]]）
-# 在管理面板中配置：http://127.0.0.1:22217/admin
-# 中国手机号登录示例
-# [[ds_core.accounts]]
-# email = ""
-# mobile = "13800138000"
-# area_code = "+86"
-# password = "your_password"
 
-# 已验证通过的 User-Agent（Android 客户端模拟）
-# user_agent = "DeepSeek/2.1.1 Android/35"
+[proxy]
 
-# 支持的模型类型列表
-# model_types = ["default", "expert", "vision"]
-
-# Admin 配置（由管理面板自动管理，无需手动填写）
-# [admin]
-# password_hash = ""
-# jwt_secret = ""
-# jwt_issued_at = 0
+[admin]

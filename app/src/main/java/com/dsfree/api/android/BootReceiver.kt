@@ -15,7 +15,9 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             Log.i(TAG, "收到开机广播，启动代理服务")
-            val serviceIntent = Intent(context, ProxyService::class.java)
+            val serviceIntent = Intent(context, ProxyService::class.java).apply {
+                action = ProxyService.ACTION_START
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
             } else {

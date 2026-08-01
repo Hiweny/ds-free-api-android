@@ -2,7 +2,6 @@ package com.dsfree.api.android
 
 import android.app.Service
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import kotlinx.coroutines.*
@@ -14,13 +13,21 @@ class ProxyService : Service() {
 
     companion object {
         private const val TAG = "DSFreeAPI"
-        private const val BINARY_NAME = "ds-free-api"
-        private const val CONFIG_NAME = "config.toml"
+        private const val BINARY_NAME = "libdsfreeapi.so"
+        const val CONFIG_NAME = "config.toml"
+        const val ACTION_START = "com.dsfree.api.android.ACTION_START"
+        const val ACTION_PAUSE = "com.dsfree.api.android.ACTION_PAUSE"
+        const val ACTION_RESUME = "com.dsfree.api.android.ACTION_RESUME"
+        const val ACTION_STOP = "com.dsfree.api.android.ACTION_STOP"
+
+        private const val MAX_RESTART_COUNT = 5
+        private const val RESTART_DELAY_MS = 3000L
     }
 
-    private var proxyProcess: java.lang.Process? = null
+    private var proxyProcess: Process? = null
     private lateinit var notificationHelper: NotificationHelper
     private var isRunning = false
+    private var restartCount = 0
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
@@ -30,9 +37,10 @@ class ProxyService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            NotificationHelper.ACTION_PAUSE -> pauseProxy()
-            NotificationHelper.ACTION_RESUME -> resumeProxy()
-            NotificationHelper.ACTION_STOP -> stopProxy()
+            ACTION_START -> startProxy()
+            ACTION_PAUSE -> pauseProxy()
+            ACTION_RESUME -> resumeProxy()
+            ACTION_STOP -> stopProxy()
             else -> startProxy()
         }
         return START_STICKY
@@ -43,19 +51,17 @@ class ProxyService : Service() {
     private fun startProxy() {
         if (isRunning) return
 
-        // 显示前台通知
         startForeground(
             NotificationHelper.NOTIFICATION_ID,
             notificationHelper.createRunningNotification()
         )
 
+        restartCount = 0
+
         serviceScope.launch {
             try {
-                // 1. 准备二进制文件
-                val binaryFile = prepareBinary()
-                // 2. 准备配置文件
+                val binaryFile = resolveBinary()
                 prepareConfig()
-                // 3. 启动二进制
                 launchBinary(binaryFile)
                 isRunning = true
                 Log.i(TAG, "ds-free-api 代理服务已启动")
@@ -66,91 +72,122 @@ class ProxyService : Service() {
         }
     }
 
-    private fun prepareBinary(): File {
-        val binaryFile = File(filesDir, BINARY_NAME)
+    /**
+     * 从 nativeLibraryDir 获取已提取的二进制文件。
+     * Android 10+ 禁止从 filesDir 执行二进制 (W^X 限制)，
+     * 必须使用 jniLibs 打包的二进制（自动提取到 nativeLibraryDir）。
+     */
+    private fun resolveBinary(): File {
+        val nativeDir = applicationInfo.nativeLibraryDir
+        val binaryFile = File(nativeDir, BINARY_NAME)
 
-        // 如果二进制已存在且可执行，直接复用
         if (binaryFile.exists() && binaryFile.canExecute()) {
-            Log.d(TAG, "二进制文件已存在: ${binaryFile.absolutePath}")
+            Log.i(TAG, "二进制文件就绪: ${binaryFile.absolutePath} (${binaryFile.length()} bytes)")
             return binaryFile
         }
 
-        // 从 assets 拷贝二进制
-        try {
-            val inputStream = assets.open(BINARY_NAME)
-            FileOutputStream(binaryFile).use { output ->
-                inputStream.copyTo(output)
-            }
-            inputStream.close()
-
-            // 设置可执行权限
-            binaryFile.setExecutable(true, false)
-            binaryFile.setReadable(true, false)
-            binaryFile.setWritable(false, false)
-
-            Log.i(TAG, "二进制文件已安装: ${binaryFile.absolutePath} (${binaryFile.length()} bytes)")
-        } catch (e: IOException) {
-            throw RuntimeException("无法从 assets 提取二进制文件: ${e.message}", e)
+        // 极端 fallback：尝试从 assets 拷贝到 filesDir（Android 9 及以下可用）
+        Log.w(TAG, "nativeLibraryDir 中未找到二进制，尝试 assets fallback...")
+        val fallback = File(filesDir, BINARY_NAME)
+        if (fallback.exists() && fallback.canExecute()) {
+            Log.w(TAG, "使用 assets fallback: ${fallback.absolutePath}")
+            return fallback
         }
 
-        return binaryFile
+        try {
+            assets.open(BINARY_NAME).use { input ->
+                FileOutputStream(fallback).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            fallback.setExecutable(true, true)
+            fallback.setReadable(true, true)
+            fallback.setWritable(true, true)
+            Log.w(TAG, "已从 assets 拷贝到 filesDir: ${fallback.absolutePath}")
+            return fallback
+        } catch (e: IOException) {
+            throw RuntimeException(
+                "无法定位二进制文件。nativeLibraryDir=$nativeDir, " +
+                "fallback=${fallback.absolutePath}, error=${e.message}", e
+            )
+        }
     }
 
     private fun prepareConfig() {
         val configFile = File(filesDir, CONFIG_NAME)
 
-        // 如果配置文件已存在，不覆盖
         if (configFile.exists()) {
             Log.d(TAG, "配置文件已存在: ${configFile.absolutePath}")
             return
         }
 
         try {
-            val inputStream = assets.open("config.example.toml")
-            FileOutputStream(configFile).use { output ->
-                inputStream.copyTo(output)
+            assets.open("config.example.toml").use { input ->
+                FileOutputStream(configFile).use { output ->
+                    input.copyTo(output)
+                }
             }
-            inputStream.close()
-            configFile.setReadable(true, false)
-            configFile.setWritable(true, false)
+            configFile.setReadable(true, true)
+            configFile.setWritable(true, true)
             Log.i(TAG, "默认配置文件已创建: ${configFile.absolutePath}")
         } catch (e: IOException) {
-            // 如果 assets 中也没有，创建一个最小配置
-            configFile.writeText("""
-[server]
-host = "127.0.0.1"
-port = 22217
+            // 如果 assets 中没有，创建最小配置
+            configFile.writeText(
+                """
+                [server]
+                host = "127.0.0.1"
+                port = 22217
+                cors_origins = ["http://localhost:22217", "http://127.0.0.1:22217"]
 
-[ds_core]
-            """.trimIndent())
-            Log.w(TAG, "创建了最小配置文件: ${configFile.absolutePath}")
+                [ds_core]
+
+                [proxy]
+
+                [admin]
+                """.trimIndent()
+            )
+            configFile.setReadable(true, true)
+            configFile.setWritable(true, true)
+            Log.w(TAG, "创建了内联最小配置文件: ${configFile.absolutePath}")
         }
     }
 
     private fun launchBinary(binaryFile: File) {
         val configFile = File(filesDir, CONFIG_NAME)
         val dataDir = filesDir.absolutePath
+        val cacheDir = cacheDir.absolutePath
 
-        val command = arrayOf(
+        val command = listOf(
             binaryFile.absolutePath,
-            "--config", configFile.absolutePath
+            "-c",
+            configFile.absolutePath
         )
 
-        val processBuilder = ProcessBuilder(*command)
+        val processBuilder = ProcessBuilder(command)
         processBuilder.directory(filesDir)
-        processBuilder.environment()["DS_DATA_DIR"] = dataDir
-        processBuilder.environment()["HOME"] = filesDir.absolutePath
+
+        // 设置运行时环境变量
+        processBuilder.environment().apply {
+            put("DS_DATA_DIR", dataDir)
+            put("DS_CONFIG_PATH", configFile.absolutePath)
+            put("RUST_LOG", "info")
+            put("HOME", dataDir)
+            put("TMPDIR", cacheDir)
+            put("SSL_CERT_FILE", "/system/etc/security/cacerts/")
+        }
+
         processBuilder.redirectErrorStream(true)
 
         try {
             proxyProcess = processBuilder.start()
+            Log.i(TAG, "已启动进程: PID=${proxyProcess?.pid()}, binary=${binaryFile.name}")
 
             // 读取进程输出用于日志
             serviceScope.launch {
                 try {
                     proxyProcess?.inputStream?.bufferedReader()?.use { reader ->
                         reader.lineSequence().forEach { line ->
-                            Log.d(TAG, "[ds-free-api] $line")
+                            Log.i(TAG, "[ds-free-api] $line")
                         }
                     }
                 } catch (e: Exception) {
@@ -164,13 +201,16 @@ port = 22217
                     val exitCode = proxyProcess?.waitFor() ?: -1
                     Log.w(TAG, "ds-free-api 进程退出，退出码: $exitCode")
                     isRunning = false
-                    // 如果服务还在运行，尝试重启
-                    if (exitCode != 0) {
-                        delay(3000)
+
+                    if (exitCode != 0 && restartCount < MAX_RESTART_COUNT) {
+                        restartCount++
+                        Log.i(TAG, "尝试重启 ds-free-api (第 $restartCount 次)...")
+                        delay(RESTART_DELAY_MS)
                         if (!isRunning) {
-                            Log.i(TAG, "尝试重启 ds-free-api...")
                             launchBinary(binaryFile)
                         }
+                    } else if (restartCount >= MAX_RESTART_COUNT) {
+                        Log.e(TAG, "已达最大重启次数 ($MAX_RESTART_COUNT)，停止重启")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "进程监控异常", e)

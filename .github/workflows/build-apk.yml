@@ -3,29 +3,85 @@ name: Build APK
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      ds_version:
-        description: 'ds-free-api 版本号 (留空使用最新 Release)'
-        required: false
-        default: ''
 
 env:
   DS_FREE_API_REPO: "NIyueeE/ds-free-api"
-  DS_BINARY_ASSET_PATH: "app/src/main/assets/ds-free-api"
+  NDK_VERSION: "27.2.12479018"
+  ABI: "arm64-v8a"
+  API_LEVEL: "24"
+  BINARY_NAME: "ds-free-api"
+  JNI_LIB_NAME: "libdsfreeapi.so"
 
 jobs:
   build:
-    name: Build APK
+    name: Build Native APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout
+      - name: Checkout Android project
         uses: actions/checkout@v4
 
+      - name: Checkout ds-free-api source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DS_FREE_API_REPO }}
+          path: ds-free-api-src
+
+      # ============================================================
+      # 1. 系统依赖
+      # ============================================================
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev clang llvm perl git
+
+      # ============================================================
+      # 2. 构建前端 (rust-embed 编译时嵌入 web/dist)
+      # ============================================================
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build frontend assets
+        run: |
+          cd ds-free-api-src/web
+          bun install
+          bun run build
+          ls -la dist/
+          echo "前端构建完成"
+
+      # ============================================================
+      # 3. Rust 工具链 + cargo-ndk
+      # ============================================================
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Remove rust-toolchain.toml (使用 stable)
+        run: |
+          rm -f ds-free-api-src/rust-toolchain.toml
+          rustc --version
+          cargo --version
+          rustup target list --installed
+
+      - name: Cache Cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-ndk-${{ hashFiles('ds-free-api-src/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ndk-
+
+      # ============================================================
+      # 4. JDK + Android SDK + NDK
+      # ============================================================
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -35,66 +91,92 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0 cmdline-tools;latest'
+          packages: |
+            platforms;android-35
+            build-tools;35.0.0
+            cmdline-tools;latest
+            ndk;${{ env.NDK_VERSION }}
 
-      - name: Download ds-free-api binary
+      # ============================================================
+      # 5. 交叉编译环境变量
+      # ============================================================
+      - name: Configure cross-compilation environment
         run: |
-          mkdir -p app/src/main/assets
+          NDK_HOME="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          echo "NDK路径: $NDK_HOME"
+          ls -la "$NDK_HOME" || { echo "NDK 未找到！"; exit 1; }
 
-          # 使用 musl 静态链接版本（兼容 Android bionic libc）
-          # ds-free-api v0.2.6 aarch64-linux-musl (statically linked)
-          DOWNLOAD_URL="https://github.com/NIyueeE/ds-free-api/releases/download/v0.2.6/ds-free-api-v0.2.6-linux-aarch64-musl.tar.gz"
+          NDK_TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          SYSROOT="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 
-          echo "下载 ds-free-api 二进制..."
-          echo "URL: ${DOWNLOAD_URL}"
+          # BoringSSL (wreq crate) 需要的 CC/CXX
+          echo "CC_aarch64_linux_android=${NDK_TOOLCHAIN}/aarch64-linux-android${{ env.API_LEVEL }}-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64_linux_android=${NDK_TOOLCHAIN}/aarch64-linux-android${{ env.API_LEVEL }}-clang++" >> $GITHUB_ENV
+          echo "AR_aarch64_linux_android=${NDK_TOOLCHAIN}/llvm-ar" >> $GITHUB_ENV
 
-          curl -sS -L --connect-timeout 30 --max-time 120 \
-            -o ds-free-api.tar.gz "${DOWNLOAD_URL}"
+          # bindgen (boring crate) 需要 libclang
+          LIBCLANG_PATH=$(llvm-config --libdir)
+          echo "LIBCLANG_PATH=${LIBCLANG_PATH}" >> $GITHUB_ENV
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${SYSROOT}/usr/include/aarch64-linux-android" >> $GITHUB_ENV
 
-          if [ ! -f ds-free-api.tar.gz ]; then
-            echo "错误: 下载失败"
-            exit 1
-          fi
+          # NDK 路径
+          echo "ANDROID_NDK_HOME=${NDK_HOME}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=${NDK_HOME}" >> $GITHUB_ENV
 
-          echo "下载完成，文件大小: $(stat -c%s ds-free-api.tar.gz) bytes"
+          # 限制并发避免 OOM
+          echo "CARGO_BUILD_JOBS=2" >> $GITHUB_ENV
 
-          # 解压并提取二进制
-          echo "解压..."
-          tar -xzf ds-free-api.tar.gz
-          echo "解压后的文件:"
-          ls -la
+          echo "=== 环境变量配置完成 ==="
+          echo "CC: ${NDK_TOOLCHAIN}/aarch64-linux-android${{ env.API_LEVEL }}-clang"
+          echo "LIBCLANG_PATH: ${LIBCLANG_PATH}"
+          echo "SYSROOT: ${SYSROOT}"
 
-          # 查找解压后的二进制文件
-          BINARY=$(find . -maxdepth 3 -name "ds-free-api" -type f | head -1)
-          if [ -z "${BINARY}" ]; then
-            echo "错误: 解压后未找到 ds-free-api 二进制文件"
-            find . -type f | head -20
-            exit 1
-          fi
-          echo "找到二进制: ${BINARY}"
-          cp "${BINARY}" "${{ env.DS_BINARY_ASSET_PATH }}"
-          chmod +x "${{ env.DS_BINARY_ASSET_PATH }}"
-          ls -la "${{ env.DS_BINARY_ASSET_PATH }}"
-          file "${{ env.DS_BINARY_ASSET_PATH }}"
-
-      - name: Verify assets
+      # ============================================================
+      # 6. 交叉编译 ds-free-api 为 Android aarch64 二进制
+      # ============================================================
+      - name: Cross-compile ds-free-api for Android
         run: |
-          echo "=== Assets 目录内容 ==="
-          ls -la app/src/main/assets/
-          echo "=== 二进制文件类型 ==="
-          file app/src/main/assets/ds-free-api || true
+          cd ds-free-api-src
+          echo "开始交叉编译 (可能需要 20-40 分钟)..."
+          cargo ndk -t ${{ env.ABI }} -p ${{ env.API_LEVEL }} build --release
+          echo "编译完成！"
+          BINARY_PATH="target/aarch64-linux-android/release/${{ env.BINARY_NAME }}"
+          ls -la "$BINARY_PATH"
+          file "$BINARY_PATH"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.11.1"
+      - name: Strip binary (减小体积)
+        run: |
+          NDK_HOME="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          STRIP_TOOL="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+          BINARY_PATH="ds-free-api-src/target/aarch64-linux-android/release/${{ env.BINARY_NAME }}"
+          BEFORE_SIZE=$(stat -c%s "$BINARY_PATH")
+          echo "Strip 前: $BEFORE_SIZE bytes ($(($BEFORE_SIZE / 1024 / 1024)) MB)"
 
-      - name: Build Release APK
-        run: gradle assembleRelease --stacktrace
+          "$STRIP_TOOL" --strip-all "$BINARY_PATH"
 
+          AFTER_SIZE=$(stat -c%s "$BINARY_PATH")
+          echo "Strip 后: $AFTER_SIZE bytes ($(($AFTER_SIZE / 1024 / 1024)) MB)"
+          echo "减小: $((($BEFORE_SIZE - $AFTER_SIZE) / 1024 / 1024)) MB"
+
+          file "$BINARY_PATH"
+
+      # ============================================================
+      # 7. 将二进制打包为 jniLibs (Android 可执行)
+      # ============================================================
+      - name: Copy binary to jniLibs
+        run: |
+          mkdir -p app/src/main/jniLibs/${{ env.ABI }}
+          cp ds-free-api-src/target/aarch64-linux-android/release/${{ env.BINARY_NAME }} \
+             app/src/main/jniLibs/${{ env.ABI }}/${{ env.JNI_LIB_NAME }}
+
+          echo "=== jniLibs 内容 ==="
+          ls -la app/src/main/jniLibs/${{ env.ABI }}/
+          file app/src/main/jniLibs/${{ env.ABI }}/${{ env.JNI_LIB_NAME }}
+
+      # ============================================================
+      # 8. 生成签名密钥
+      # ============================================================
       - name: Generate debug keystore
         run: |
           if [ ! -f $HOME/.android/debug.keystore ]; then
@@ -107,12 +189,29 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+              -dname "CN=DSFreeAPI,O=DSFreeAPI,C=US"
             echo "Debug keystore 已生成"
           else
             echo "Debug keystore 已存在"
           fi
 
+      # ============================================================
+      # 9. 构建 APK
+      # ============================================================
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Build Release APK
+        run: gradle assembleRelease --stacktrace
+
+      # ============================================================
+      # 10. 签名 Release APK
+      # ============================================================
       - name: Sign Release APK
         run: |
           if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
@@ -123,41 +222,36 @@ jobs:
               --key-pass pass:android \
               --out app/build/outputs/apk/release/app-release.apk \
               app/build/outputs/apk/release/app-release-unsigned.apk
-            echo "Release APK 已签名"
+            echo "Release APK 签名完成"
+
+            # 验证签名
+            $ANDROID_HOME/build-tools/35.0.0/apksigner verify \
+              --verbose app/build/outputs/apk/release/app-release.apk
           else
             echo "未找到 release APK，跳过签名"
           fi
 
+      # ============================================================
+      # 11. 列出产物
+      # ============================================================
+      - name: List build outputs
+        run: |
+          echo "=== APK 产物 ==="
+          find app/build/outputs/apk -name "*.apk" -exec ls -la {} \;
+
+      # ============================================================
+      # 12. 上传产物
+      # ============================================================
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: ds-free-api-android-debug
+          name: ds-free-api-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          retention-days: 90
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ds-free-api-android-release
+          name: ds-free-api-release
           path: app/build/outputs/apk/release/app-release.apk
-          retention-days: 30
-
-  release:
-    name: Create Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ds-free-api-android-release
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            app-release.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+          retention-days: 90

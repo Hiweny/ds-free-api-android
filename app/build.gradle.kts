@@ -11,8 +11,12 @@ android {
         applicationId = "com.dsfree.api.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.2.0"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -43,9 +47,12 @@ android {
         viewBinding = true
     }
 
-    // 禁止压缩 assets 中的二进制文件
-    aaptOptions {
-        noCompress("gz", "tar", "so", "bin")
+    // 关键：提取 .so 文件到文件系统（nativeLibraryDir），
+    // 否则 ProcessBuilder 无法执行打包在 jniLibs 中的二进制
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 

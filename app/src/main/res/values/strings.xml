@@ -7,4 +7,8 @@
     <string name="action_resume">恢复</string>
     <string name="action_stop">停止</string>
     <string name="action_open">打开管理面板</string>
+    <string name="loading_text">正在启动 DeepSeek 代理服务...</string>
+    <string name="error_title">服务启动失败</string>
+    <string name="retry">重试</string>
+    <string name="error_message">代理服务未能在 60 秒内启动。\n\n请检查：\n1. 设备是否为 arm64 架构\n2. 端口 22217 是否被占用\n3. 请尝试完全关闭应用后重新打开</string>
 </resources>

@@ -14,3 +14,5 @@ local.properties
 *.aab
 *.jks
 *.keystore
+# jniLibs 由 CI 构建 Rust 二进制后自动生成
+/app/src/main/jniLibs/
