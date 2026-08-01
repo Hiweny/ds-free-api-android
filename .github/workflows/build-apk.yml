@@ -42,50 +42,27 @@ jobs:
 
       - name: Download ds-free-api binary
         run: |
-          set -e
           mkdir -p app/src/main/assets
 
-          # 获取最新 Release 信息
-          if [ -n "${{ github.event.inputs.ds_version }}" ]; then
-            TAG="v${{ github.event.inputs.ds_version }}"
-          else
-            RELEASE_JSON=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/latest")
-            echo "Release API 响应: $(echo "$RELEASE_JSON" | head -c 200)"
-            TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
-          fi
+          # 使用已知的下载 URL 直接下载（最可靠的方式）
+          # ds-free-api v0.2.6 aarch64-linux-gnu
+          DOWNLOAD_URL="https://github.com/NIyueeE/ds-free-api/releases/download/v0.2.6/ds-free-api-v0.2.6-linux-aarch64-gnu.tar.gz"
 
-          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
-            echo "错误: 无法获取最新 Release 标签"
-            echo "尝试直接使用已知版本 v0.2.6"
-            TAG="v0.2.6"
-          fi
+          echo "下载 ds-free-api 二进制..."
+          echo "URL: ${DOWNLOAD_URL}"
 
-          echo "使用 ds-free-api 版本: ${TAG}"
+          curl -sS -L --connect-timeout 30 --max-time 120 \
+            -o ds-free-api.tar.gz "${DOWNLOAD_URL}"
 
-          # 获取 Release 的 asset 列表
-          RELEASE_DATA=$(curl -sS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ env.DS_FREE_API_REPO }}/releases/tags/${TAG}")
-
-          # 获取 Android ARM64 (aarch64-linux-gnu) 的下载 URL
-          ASSET_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("aarch64-linux-gnu")) | .browser_download_url' | head -1)
-
-          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
-            echo "未找到 aarch64-linux-gnu 二进制文件，尝试 musl 版本..."
-            ASSET_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("aarch64-linux-musl")) | .browser_download_url' | head -1)
-          fi
-
-          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
-            echo "错误: 未找到任何 Android ARM64 二进制文件"
-            echo "可用的 assets:"
-            echo "$RELEASE_DATA" | jq -r '.assets[].name'
+          if [ ! -f ds-free-api.tar.gz ]; then
+            echo "错误: 下载失败"
             exit 1
           fi
 
-          echo "下载: ${ASSET_URL}"
-          curl -sS -L -o ds-free-api.tar.gz "${ASSET_URL}"
+          echo "下载完成，文件大小: $(stat -c%s ds-free-api.tar.gz) bytes"
 
           # 解压并提取二进制
+          echo "解压..."
           tar -xzf ds-free-api.tar.gz
           echo "解压后的文件:"
           ls -la
