@@ -41,9 +41,9 @@ jobs:
         run: |
           mkdir -p app/src/main/assets
 
-          # 使用已知的下载 URL 直接下载（最可靠的方式）
-          # ds-free-api v0.2.6 aarch64-linux-gnu
-          DOWNLOAD_URL="https://github.com/NIyueeE/ds-free-api/releases/download/v0.2.6/ds-free-api-v0.2.6-linux-aarch64-gnu.tar.gz"
+          # 使用 musl 静态链接版本（兼容 Android bionic libc）
+          # ds-free-api v0.2.6 aarch64-linux-musl (statically linked)
+          DOWNLOAD_URL="https://github.com/NIyueeE/ds-free-api/releases/download/v0.2.6/ds-free-api-v0.2.6-linux-aarch64-musl.tar.gz"
 
           echo "下载 ds-free-api 二进制..."
           echo "URL: ${DOWNLOAD_URL}"
