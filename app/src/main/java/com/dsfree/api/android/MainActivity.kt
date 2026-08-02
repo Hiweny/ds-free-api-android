@@ -1,5 +1,8 @@
 package com.dsfree.api.android
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -18,7 +21,9 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
@@ -34,6 +39,7 @@ class MainActivity : AppCompatActivity() {
         private const val MAX_RETRIES = 90
         private const val POLL_INTERVAL_MS = 1000L
         private const val PAGE_LOAD_TIMEOUT_MS = 15000L
+        private const val FAST_FAIL_CHECK_MS = 3000L
     }
 
     private lateinit var webView: WebView
@@ -42,6 +48,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingText: TextView
     private lateinit var errorText: TextView
     private lateinit var retryButton: Button
+    private lateinit var debugScrollView: ScrollView
+    private lateinit var debugText: TextView
+    private lateinit var copyButton: Button
 
     private val handler = Handler(Looper.getMainLooper())
     private var healthCheckThread: Thread? = null
@@ -67,16 +76,25 @@ class MainActivity : AppCompatActivity() {
         loadingText = findViewById(R.id.loadingText)
         errorText = findViewById(R.id.errorText)
         retryButton = findViewById(R.id.retryButton)
+        debugScrollView = findViewById(R.id.debugScrollView)
+        debugText = findViewById(R.id.debugText)
+        copyButton = findViewById(R.id.copyButton)
 
         retryButton.setOnClickListener {
             showError(false)
             startProxyService()
             startHealthCheck()
         }
+
+        copyButton.setOnClickListener {
+            val debugInfo = debugText.text.toString()
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("debug", debugInfo))
+            Toast.makeText(this, "调试信息已复制到剪贴板", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun setupWebView() {
-        // 硬件加速
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         webView.settings.apply {
@@ -91,13 +109,10 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = true
             mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-
-            // 允许跨域请求到本地服务
             allowUniversalAccessFromFileURLs = false
             allowFileAccessFromFileURLs = false
         }
 
-        // 深色模式支持
         applyDarkMode()
 
         webView.webViewClient = AdminWebViewClient()
@@ -116,7 +131,6 @@ class MainActivity : AppCompatActivity() {
                 android.content.res.Configuration.UI_MODE_NIGHT_YES
 
         if (isDarkMode) {
-            // 优先使用 Algorithmic Darkening (API 29+)
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
                 WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, true)
                 Log.i(TAG, "深色模式: Algorithmic Darkening 已启用")
@@ -125,8 +139,6 @@ class MainActivity : AppCompatActivity() {
                 WebSettingsCompat.setForceDark(webView.settings, WebSettingsCompat.FORCE_DARK_ON)
                 Log.i(TAG, "深色模式: Force Dark 已启用")
             }
-
-            // 设置 WebView 背景为深色
             webView.setBackgroundColor(Color.parseColor("#121212"))
         } else {
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
@@ -158,6 +170,17 @@ class MainActivity : AppCompatActivity() {
         healthCheckThread = Thread {
             var retryCount = 0
             while (retryCount < MAX_RETRIES && isHealthChecking && !isFinishing) {
+                // 快速失败检测：检查 ProxyService 是否报告了错误
+                val svcError = ProxyService.serviceError
+                if (svcError != null) {
+                    Log.e(TAG, "ProxyService 报告错误: $svcError")
+                    handler.post {
+                        isHealthChecking = false
+                        showErrorWithDebug(svcError, ProxyService.processOutput)
+                    }
+                    break
+                }
+
                 try {
                     val url = URL(HEALTH_URL)
                     val connection = url.openConnection() as HttpURLConnection
@@ -184,8 +207,7 @@ class MainActivity : AppCompatActivity() {
 
                 retryCount++
 
-                // 每 15 次更新加载提示
-                if (retryCount % 15 == 0) {
+                if (retryCount % 10 == 0) {
                     handler.post {
                         loadingText.text = "正在启动 DeepSeek 代理服务... (${retryCount}s)"
                     }
@@ -202,7 +224,15 @@ class MainActivity : AppCompatActivity() {
             if (isHealthChecking && !isFinishing) {
                 handler.post {
                     isHealthChecking = false
-                    showError(true)
+                    val svcError = ProxyService.serviceError
+                    if (svcError != null) {
+                        showErrorWithDebug(svcError, ProxyService.processOutput)
+                    } else {
+                        showErrorWithDebug(
+                            "代理服务未能在 ${MAX_RETRIES} 秒内启动。",
+                            ProxyService.processOutput
+                        )
+                    }
                 }
             }
         }.also { it.isDaemon = true }
@@ -211,11 +241,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadAdminPanel() {
         runOnUiThread {
-            // 设置页面加载超时
             pageLoadTimeoutRunnable = Runnable {
                 if (!isWebViewVisible) {
                     Log.w(TAG, "WebView 页面加载超时")
-                    showError(true)
+                    showErrorWithDebug("页面加载超时", ProxyService.processOutput)
                 }
             }
             handler.postDelayed(pageLoadTimeoutRunnable!!, PAGE_LOAD_TIMEOUT_MS)
@@ -233,6 +262,8 @@ class MainActivity : AppCompatActivity() {
             loadingText.text = getString(R.string.loading_text)
             errorText.visibility = View.GONE
             retryButton.visibility = View.GONE
+            debugScrollView.visibility = View.GONE
+            copyButton.visibility = View.GONE
             webView.visibility = View.GONE
             isWebViewVisible = false
         }
@@ -250,6 +281,24 @@ class MainActivity : AppCompatActivity() {
                 loadingText.visibility = View.VISIBLE
                 errorText.visibility = View.GONE
                 retryButton.visibility = View.GONE
+                debugScrollView.visibility = View.GONE
+                copyButton.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun showErrorWithDebug(error: String, debug: String) {
+        runOnUiThread {
+            progressBar.visibility = View.GONE
+            loadingText.visibility = View.GONE
+            errorText.visibility = View.VISIBLE
+            errorText.text = error
+            retryButton.visibility = View.VISIBLE
+
+            if (debug.isNotEmpty()) {
+                debugText.text = debug
+                debugScrollView.visibility = View.VISIBLE
+                copyButton.visibility = View.VISIBLE
             }
         }
     }
@@ -304,19 +353,19 @@ class MainActivity : AppCompatActivity() {
             super.onReceivedError(view, request, error)
             Log.e(TAG, "WebView 错误: ${error?.description} (code=${error?.errorCode}) url=${request?.url}")
 
-            // 仅对主框架错误显示错误页
             if (request?.isForMainFrame == true && !isWebViewVisible) {
-                showError(true)
+                showErrorWithDebug(
+                    "页面加载失败: ${error?.description}",
+                    ProxyService.processOutput
+                )
             }
         }
 
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val url = request?.url?.toString() ?: return true
-            // 只允许加载本地管理面板
             if (url.startsWith("http://127.0.0.1:22217") || url.startsWith("http://localhost:22217")) {
                 return false
             }
-            // 阻止外部链接
             return true
         }
     }

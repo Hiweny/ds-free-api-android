@@ -11,8 +11,8 @@ android {
         applicationId = "com.dsfree.api.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -53,6 +53,11 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+    }
+
+    // 不压缩 .so 文件，确保正确提取
+    androidResources {
+        noCompress += "so"
     }
 }
 
