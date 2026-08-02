@@ -42,6 +42,252 @@ class MainActivity : AppCompatActivity() {
         private const val MAX_RETRIES = 90
         private const val POLL_INTERVAL_MS = 1000L
         private const val PAGE_LOAD_TIMEOUT_MS = 15000L
+
+        /**
+         * 移动端适配注入脚本 (CSS + JS)。
+         *
+         * ds-free-api 管理面板基于 React + Tailwind CSS v4 + shadcn/ui 构建，
+         * 原始布局为桌面端设计：
+         *   <div class="min-h-screen flex">
+         *     <aside class="w-56 border-r bg-card flex flex-col">侧边栏</aside>
+         *     <main class="flex-1 overflow-auto">
+         *       <div class="p-6 w-full">页面内容</div>
+         *     </main>
+         *   </div>
+         *
+         * 适配策略：
+         * 1. CSS：侧边栏 → 固定定位抽屉，主内容 → 全宽，表格 → 水平滚动，
+         *    Flex 布局 → 允许换行，字号/间距 → 移动端友好尺寸
+         * 2. JS：创建浮动菜单按钮 + 半透明遮罩，点击按钮切换侧边栏开/关，
+         *    使用 MutationObserver 监听 React SPA 导航导致的 DOM 重建，
+         *    自动在登录页隐藏按钮、在管理页显示按钮
+         */
+        private const val MOBILE_ADAPT_SCRIPT = """
+(function() {
+    'use strict';
+    if (window.__mobileAdaptInit) return;
+    window.__mobileAdaptInit = true;
+
+    // ==================== 1. 注入 CSS ====================
+    var style = document.createElement('style');
+    style.id = 'mobile-adapt-css';
+    style.textContent = [
+        '@media (max-width: 768px) {',
+        '  /* === 防止水平溢出 === */',
+        '  html, body { overflow-x: hidden !important; max-width: 100vw !important; }',
+        '',
+        '  /* === 侧边栏：固定抽屉 === */',
+        '  aside.w-56 {',
+        '    position: fixed !important;',
+        '    left: -280px !important;',
+        '    top: 0 !important;',
+        '    bottom: 0 !important;',
+        '    height: 100dvh !important;',
+        '    width: 260px !important;',
+        '    max-width: 85vw !important;',
+        '    z-index: 10000 !important;',
+        '    transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;',
+        '    box-shadow: 2px 0 16px rgba(0,0,0,0.25) !important;',
+        '  }',
+        '  aside.w-56.mobile-open { left: 0 !important; }',
+        '',
+        '  /* === 主内容区：全宽 === */',
+        '  main.flex-1 {',
+        '    width: 100% !important;',
+        '    max-width: 100% !important;',
+        '    overflow-x: hidden !important;',
+        '  }',
+        '  main.flex-1 > div {',
+        '    padding: 10px !important;',
+        '    padding-top: 50px !important;',
+        '  }',
+        '',
+        '  /* === 浮动菜单按钮 === */',
+        '  .mobile-menu-btn {',
+        '    position: fixed !important;',
+        '    top: 6px !important;',
+        '    left: 6px !important;',
+        '    z-index: 9999 !important;',
+        '    width: 36px !important;',
+        '    height: 36px !important;',
+        '    border-radius: 8px !important;',
+        '    background: var(--primary, oklch(0.205 0 0)) !important;',
+        '    color: var(--primary-foreground, oklch(0.985 0 0)) !important;',
+        '    display: flex !important;',
+        '    align-items: center !important;',
+        '    justify-content: center !important;',
+        '    cursor: pointer !important;',
+        '    border: none !important;',
+        '    padding: 0 !important;',
+        '    box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;',
+        '    -webkit-tap-highlight-color: transparent !important;',
+        '    user-select: none !important;',
+        '  }',
+        '  .mobile-menu-btn:active { opacity: 0.7 !important; }',
+        '',
+        '  /* === 遮罩层 === */',
+        '  .mobile-overlay {',
+        '    position: fixed !important;',
+        '    top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;',
+        '    background: rgba(0,0,0,0.5) !important;',
+        '    z-index: 9997 !important;',
+        '    opacity: 0 !important;',
+        '    pointer-events: none !important;',
+        '    transition: opacity 0.3s ease !important;',
+        '  }',
+        '  .mobile-overlay.visible {',
+        '    opacity: 1 !important;',
+        '    pointer-events: auto !important;',
+        '  }',
+        '',
+        '  /* === 表格：水平滚动 === */',
+        '  [class*="overflow-auto"] {',
+        '    max-width: 100% !important;',
+        '    overflow-x: auto !important;',
+        '    -webkit-overflow-scrolling: touch !important;',
+        '  }',
+        '  table { width: 100% !important; }',
+        '',
+        '  /* === Flex 布局：允许换行 === */',
+        '  main.flex-1 .flex.gap-6 {',
+        '    flex-wrap: wrap !important;',
+        '    gap: 12px !important;',
+        '    justify-content: space-around !important;',
+        '  }',
+        '  main.flex-1 .flex.gap-4 { flex-wrap: wrap !important; }',
+        '',
+        '  /* === 字号适配 === */',
+        '  main.flex-1 .text-2xl { font-size: 1.125rem !important; }',
+        '  main.flex-1 .text-3xl { font-size: 1.5rem !important; }',
+        '  main.flex-1 h1 { font-size: 1.125rem !important; }',
+        '',
+        '  /* === Card 内边距 === */',
+        '  main.flex-1 [class*="CardContent"] { padding: 10px !important; }',
+        '  main.flex-1 [class*="CardHeader"] { padding: 10px !important; }',
+        '',
+        '  /* === 触摸目标 === */',
+        '  main.flex-1 button { min-height: 36px !important; }',
+        '  main.flex-1 nav a { min-height: 40px !important; }',
+        '',
+        '  /* === 防止 iOS 输入框聚焦缩放 === */',
+        '  input, select, textarea { font-size: 16px !important; }',
+        '',
+        '  /* === 账号池项目 === */',
+        '  main.flex-1 .text-center { min-width: 56px !important; }',
+        '',
+        '  /* === 登录页：保持居中 === */',
+        '  .min-h-screen.flex.items-center.justify-center { padding: 16px !important; }',
+        '}'
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(style);
+
+    // ==================== 2. 创建 UI 元素 ====================
+    // 浮动菜单按钮 (SVG 汉堡图标)
+    var menuBtn = document.createElement('button');
+    menuBtn.id = 'mobile-menu-btn';
+    menuBtn.className = 'mobile-menu-btn';
+    menuBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
+    menuBtn.style.display = 'none';
+    document.body.appendChild(menuBtn);
+
+    // 半透明遮罩
+    var overlay = document.createElement('div');
+    overlay.id = 'mobile-overlay';
+    overlay.className = 'mobile-overlay';
+    document.body.appendChild(overlay);
+
+    // ==================== 3. 侧边栏控制逻辑 ====================
+    function findSidebar() {
+        return document.querySelector('aside.w-56, aside[class*="w-56"]');
+    }
+
+    function closeSidebar() {
+        var sb = findSidebar();
+        if (sb) sb.classList.remove('mobile-open');
+        overlay.classList.remove('visible');
+    }
+
+    function openSidebar() {
+        var sb = findSidebar();
+        if (sb) sb.classList.add('mobile-open');
+        overlay.classList.add('visible');
+    }
+
+    function toggleSidebar() {
+        var sb = findSidebar();
+        if (!sb) return;
+        if (sb.classList.contains('mobile-open')) {
+            closeSidebar();
+        } else {
+            openSidebar();
+        }
+    }
+
+    menuBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebar();
+    });
+
+    overlay.addEventListener('click', closeSidebar);
+
+    // ==================== 4. 检测侧边栏存在性 (React SPA) ====================
+    var lastSidebarState = null;
+
+    function checkSidebar() {
+        var sb = findSidebar();
+        var hasSidebar = !!sb;
+
+        if (hasSidebar !== lastSidebarState) {
+            lastSidebarState = hasSidebar;
+            if (hasSidebar) {
+                menuBtn.style.display = 'flex';
+                // 绑定导航链接点击 → 关闭侧边栏
+                if (sb) {
+                    var links = sb.querySelectorAll('a');
+                    for (var i = 0; i < links.length; i++) {
+                        if (!links[i].__mobileAdaptBound) {
+                            links[i].__mobileAdaptBound = true;
+                            (function(link) {
+                                link.addEventListener('click', function() {
+                                    setTimeout(closeSidebar, 150);
+                                });
+                            })(links[i]);
+                        }
+                    }
+                }
+            } else {
+                // 登录页或无侧边栏页面
+                menuBtn.style.display = 'none';
+                closeSidebar();
+            }
+        }
+    }
+
+    // MutationObserver：监听 React DOM 重建
+    var debounceTimer = null;
+    if (typeof MutationObserver !== 'undefined') {
+        var observer = new MutationObserver(function() {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(checkSidebar, 100);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // 初始检查 + 延迟检查 (等待 React 渲染)
+    checkSidebar();
+    setTimeout(checkSidebar, 200);
+    setTimeout(checkSidebar, 500);
+    setTimeout(checkSidebar, 1000);
+    setTimeout(checkSidebar, 2000);
+    setTimeout(checkSidebar, 3000);
+
+    // 屏幕旋转时关闭侧边栏
+    window.addEventListener('orientationchange', function() {
+        setTimeout(closeSidebar, 300);
+    });
+})();
+        """.trimIndent()
     }
 
     private lateinit var viewSwitcher: ViewSwitcher
@@ -387,24 +633,7 @@ class MainActivity : AppCompatActivity() {
             super.onPageFinished(view, url)
             Log.i(TAG, "页面加载完成: $url")
             showWebView()
-            // 注入 CSS 修复可能的 viewport 问题
-            view?.evaluateJavascript(
-                """
-                (function() {
-                    // 确保 viewport meta 标签正确
-                    var meta = document.querySelector('meta[name="viewport"]');
-                    if (!meta) {
-                        meta = document.createElement('meta');
-                        meta.name = 'viewport';
-                        meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-                        document.head.appendChild(meta);
-                    }
-                    // 确保所有 input 可以获取焦点
-                    document.body.style.webkitTapHighlightColor = 'transparent';
-                })();
-                """.trimIndent(),
-                null
-            )
+            injectMobileAdaptation(view)
         }
 
         override fun onReceivedError(
@@ -429,6 +658,21 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
             return true
+        }
+
+        /**
+         * 注入移动端适配代码。
+         *
+         * ds-free-api 管理面板是 React + Tailwind CSS 的桌面端 SPA：
+         * - 固定宽度侧边栏 (aside.w-56 = 224px) 始终占据屏幕左侧
+         * - 主内容区 (main.flex-1) 带有 p-6 (24px) 内边距
+         * - 表格、Flex 布局没有移动端响应式适配
+         *
+         * 本方法注入 CSS + JS，将侧边栏改为可滑出/收起的抽屉式导航，
+         * 添加浮动菜单按钮，并优化所有内容区域在手机上的显示。
+         */
+        private fun injectMobileAdaptation(view: WebView?) {
+            view?.evaluateJavascript(MOBILE_ADAPT_SCRIPT, null)
         }
     }
 
