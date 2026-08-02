@@ -62,7 +62,7 @@ class MainActivity : AppCompatActivity() {
          *    使用 MutationObserver 监听 React SPA 导航导致的 DOM 重建，
          *    自动在登录页隐藏按钮、在管理页显示按钮
          */
-        private const val MOBILE_ADAPT_SCRIPT = """
+        private val MOBILE_ADAPT_SCRIPT = """
 (function() {
     'use strict';
     if (window.__mobileAdaptInit) return;
