@@ -13,6 +13,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -24,6 +26,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.ViewSwitcher
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
@@ -39,9 +42,9 @@ class MainActivity : AppCompatActivity() {
         private const val MAX_RETRIES = 90
         private const val POLL_INTERVAL_MS = 1000L
         private const val PAGE_LOAD_TIMEOUT_MS = 15000L
-        private const val FAST_FAIL_CHECK_MS = 3000L
     }
 
+    private lateinit var viewSwitcher: ViewSwitcher
     private lateinit var webView: WebView
     private lateinit var loadingLayout: LinearLayout
     private lateinit var progressBar: ProgressBar
@@ -60,6 +63,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 适配沉浸式状态栏
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        )
+
         setContentView(R.layout.activity_main)
 
         initViews()
@@ -70,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initViews() {
+        viewSwitcher = findViewById(R.id.viewSwitcher)
         webView = findViewById(R.id.webView)
         loadingLayout = findViewById(R.id.loadingLayout)
         progressBar = findViewById(R.id.progressBar)
@@ -95,7 +106,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupWebView() {
+        // 硬件加速
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+
+        // 关键：确保 WebView 可以获取焦点
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus(View.FOCUS_DOWN)
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -111,8 +128,12 @@ class MainActivity : AppCompatActivity() {
             cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             allowUniversalAccessFromFileURLs = false
             allowFileAccessFromFileURLs = false
+
+            // 启用文本缩放为 100%（某些设备默认缩放导致布局问题）
+            textZoom = 100
         }
 
+        // 深色模式
         applyDarkMode()
 
         webView.webViewClient = AdminWebViewClient()
@@ -122,6 +143,19 @@ class MainActivity : AppCompatActivity() {
                     showWebView()
                 }
             }
+
+            // 处理网页请求焦点（输入框点击时）
+            override fun onRequestFocus(view: WebView?) {
+                view?.requestFocus(View.FOCUS_DOWN)
+            }
+        }
+
+        // 确保WebView在可见时能获取焦点
+        webView.setOnTouchListener { v, _ ->
+            if (!v.hasFocus()) {
+                v.requestFocus(View.FOCUS_DOWN)
+            }
+            false  // 不消费事件，让 WebView 正常处理
         }
     }
 
@@ -170,7 +204,6 @@ class MainActivity : AppCompatActivity() {
         healthCheckThread = Thread {
             var retryCount = 0
             while (retryCount < MAX_RETRIES && isHealthChecking && !isFinishing) {
-                // 快速失败检测：检查 ProxyService 是否报告了错误
                 val svcError = ProxyService.serviceError
                 if (svcError != null) {
                     Log.e(TAG, "ProxyService 报告错误: $svcError")
@@ -256,7 +289,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLoading() {
         runOnUiThread {
-            loadingLayout.visibility = View.VISIBLE
+            if (viewSwitcher.displayedChild != 0) {
+                viewSwitcher.displayedChild = 0
+            }
             progressBar.visibility = View.VISIBLE
             loadingText.visibility = View.VISIBLE
             loadingText.text = getString(R.string.loading_text)
@@ -264,13 +299,15 @@ class MainActivity : AppCompatActivity() {
             retryButton.visibility = View.GONE
             debugScrollView.visibility = View.GONE
             copyButton.visibility = View.GONE
-            webView.visibility = View.GONE
             isWebViewVisible = false
         }
     }
 
     private fun showError(show: Boolean) {
         runOnUiThread {
+            if (viewSwitcher.displayedChild != 0) {
+                viewSwitcher.displayedChild = 0
+            }
             if (show) {
                 progressBar.visibility = View.GONE
                 loadingText.visibility = View.GONE
@@ -289,6 +326,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showErrorWithDebug(error: String, debug: String) {
         runOnUiThread {
+            if (viewSwitcher.displayedChild != 0) {
+                viewSwitcher.displayedChild = 0
+            }
             progressBar.visibility = View.GONE
             loadingText.visibility = View.GONE
             errorText.visibility = View.VISIBLE
@@ -306,9 +346,13 @@ class MainActivity : AppCompatActivity() {
     private fun showWebView() {
         runOnUiThread {
             pageLoadTimeoutRunnable?.let { handler.removeCallbacks(it) }
-            loadingLayout.visibility = View.GONE
-            webView.visibility = View.VISIBLE
+            // 切换到 WebView（index 1），彻底移除 loading 层
+            if (viewSwitcher.displayedChild != 1) {
+                viewSwitcher.displayedChild = 1
+            }
             isWebViewVisible = true
+            // 确保 WebView 获取焦点
+            webView.requestFocus(View.FOCUS_DOWN)
         }
     }
 
@@ -343,6 +387,24 @@ class MainActivity : AppCompatActivity() {
             super.onPageFinished(view, url)
             Log.i(TAG, "页面加载完成: $url")
             showWebView()
+            // 注入 CSS 修复可能的 viewport 问题
+            view?.evaluateJavascript(
+                """
+                (function() {
+                    // 确保 viewport meta 标签正确
+                    var meta = document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.name = 'viewport';
+                        meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+                        document.head.appendChild(meta);
+                    }
+                    // 确保所有 input 可以获取焦点
+                    document.body.style.webkitTapHighlightColor = 'transparent';
+                })();
+                """.trimIndent(),
+                null
+            )
         }
 
         override fun onReceivedError(
@@ -370,11 +432,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 处理返回键：WebView 有历史记录时后退
+    override fun onBackPressed() {
+        if (isWebViewVisible && webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         isHealthChecking = false
         healthCheckThread?.interrupt()
         pageLoadTimeoutRunnable?.let { handler.removeCallbacks(it) }
         handler.removeCallbacksAndMessages(null)
+        webView.destroy()
     }
 }
